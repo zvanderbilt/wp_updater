@@ -1,15 +1,21 @@
 #!/usr/bin/env ruby
 
 require 'optparse'
+require 'fileutils'
 require 'pp'
 require 'find'
 require 'wpcli'
 require 'csv'
 require 'mail'
+require 'uri'
+require 'highline/import'
 
 class WPParser
 
 	Version = 0.1
+
+  CODES = %w[gz bz2 xz lzma]
+  CODE_ALIASES = { "gzip" => "gz", "bzip2" => "bz2", "lzma" => "xz" }
 
 	def self.parse(args)
 		# The options specified on the command line will be collected in *options*.
@@ -19,7 +25,9 @@ class WPParser
 			dest: '/tmp/',
 			target: './',
 			to: 'root',
-			update: 'false'
+			update: 'false',
+		    compression: "gz", 
+		    switch: "z"
 		}
 
 		opts = OptionParser.new do |opts|
@@ -51,6 +59,19 @@ class WPParser
 			opts.on("-u", "--update-all", "Update Core and Plugins") do |u|
 				options[:update] = u
 			end
+
+	        code_list = (CODE_ALIASES.keys + CODES).join(',')
+   	        opts.on("-c", "--code [CODE]", CODES, CODE_ALIASES, "Select Compression", "  (#{code_list})") do |compression|
+       		    options[:compression] = compression
+				if compression == "gzip"
+					switch = "z"
+				elsif compression == "bzip2"
+					switch = "j"
+				elsif compression == "lzma"
+					switch = "J"
+           		end
+            	options[:switch] = switch
+        	end
 
 			# Boolean switch.
 			opts.on("-v", "--[no-]verbose", "Run verbosely") do |v|
@@ -106,10 +127,10 @@ class Iterator
 				@wpcli = Wpcli::Client.new File.dirname(file)
 				puts "Getting plugins for..." 
 
-				@site_name = @wpcli.run "option get siteurl --allow-root"
-				puts @site_name 
+				ugly_site_name = @wpcli.run "option get siteurl --allow-root"
+				site_name = ugly_site_name.to_s.match(URI.regexp).to_s.sub(/^https?\:\/\//, '').sub(/^www./,'')
 				CSV.open(@@target_csv, "a") do |csv|
-					csv << ["#{@site_name}",] 
+					csv << ["#{site_name}",] 
 				end
 
 				puts @options[:update]
@@ -133,6 +154,9 @@ class Iterator
 					end
 				end
 				if @options[:update] == true
+					exit unless HighLine.agree('This will attempt to backup the wordpress database and all content. Do you want to proceed?')
+					archiver(site_name,file,options)
+					exit unless HighLine.agree('This will attempt to upgrade WordPress core and all plugins. Do you want to proceed?')
 					updatewp()
 				end
 			end
@@ -140,6 +164,46 @@ class Iterator
 			puts e
 		end
 	end
+
+	def archiver(site_name,file,options)
+		export_sql = @wpcli.run "db export #{site_name}.sql --allow-root"
+		export_sql
+	    @backup_sql = "#{site_name}.sql"
+		FileUtils.mv(File.basename(@backup_sql), @options[:dest])
+		@backup_target = File.basename(File.dirname(file))
+		@backup_parent = File.dirname(File.dirname(file))
+		compressor(site_name,options)
+	end
+	def compressor(site_name,options)
+		begin
+			tarballed_name = "#{site_name}.tar.#{@options[:compression]}"
+
+			puts "Compressing! with the following algorithm: #{@options[:compression]}"
+			Dir.chdir(@options[:dest])
+			`tar c#{@options[:switch]}vf #{tarballed_name} #{@backup_sql} -C #{@backup_parent} #{@backup_target}`
+
+			puts "Finished! Checking if #{@options[:dest]}#{@backup_sql} exists..."
+			thetruth_sql = File.exist?(File.expand_path("#{@options[:dest]}#{@backup_sql}"))
+			
+			puts "The existence of #{@backup_sql} is #{thetruth_sql}"
+			puts "Deleting #{@options[:dest]}#{@backup_sql}..."
+			File.delete(@backup_sql)
+			
+			thenewtruth = File.exist?(File.expand_path("#{@options[:dest]}#{@backup_sql}"))
+			puts "The existence of #{@backup_sql} is #{thenewtruth}"
+
+			deflated = "#{@options[:dest]}#{tarballed_name}"
+			puts "Finished! Checking if #{deflated} exists..."
+			thetruth_tar = File.exist?(File.expand_path(deflated))
+			puts "The existence of #{deflated} is #{thetruth_tar}"
+			
+			puts `file #{deflated}`
+		rescue => e
+			puts e
+		end
+	end # def
+
+		
 
 	def updatewp()
 		begin
