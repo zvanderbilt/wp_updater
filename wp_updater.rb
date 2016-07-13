@@ -169,7 +169,7 @@ class Iterator
 		export_sql = @wpcli.run "db export #{site_name}.sql --allow-root"
 		export_sql
 	    @backup_sql = "#{site_name}.sql"
-		FileUtils.mv(File.basename(@backup_sql), @options[:dest])
+		FileUtils.mv(File.basename(@backup_sql), @options[:dest], {:force => true})
 		@backup_target = File.basename(File.dirname(file))
 		@backup_parent = File.dirname(File.dirname(file))
 		compressor(site_name,options)
